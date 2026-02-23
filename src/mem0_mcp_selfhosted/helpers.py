@@ -116,14 +116,14 @@ def patch_gemini_parse_response() -> None:
         logger.debug("GeminiLLM._parse_response not found — skipping patch")
         return
 
-    def _safe_parse_response(self, response):  # noqa: ANN001
+    def _safe_parse_response(self, response, *args, **kwargs):  # noqa: ANN001
         """Guarded _parse_response that handles null content gracefully."""
         if (
             response.candidates
             and response.candidates[0].content is not None
             and response.candidates[0].content.parts
         ):
-            return original(self, response)
+            return original(self, response, *args, **kwargs)
         logger.warning("[mem0] Gemini returned null content — returning empty string")
         return ""
 

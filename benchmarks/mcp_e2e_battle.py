@@ -1197,7 +1197,7 @@ def main():
                     results["D1_fact_f1"][cfg_name].append(0.0)
                     case_result[f"{cfg_name}_f1"] = 0.0
                     case_result[f"{cfg_name}_error"] = str(e)
-                    print(f" {tag}:ERR", end="", flush=True)
+                    print(f" {tag}:ERR({e.__class__.__name__}: {e})", end="", flush=True)
 
             # Determine winner
             scores_map = {cfg: case_result.get(f"{cfg}_f1", 0) for cfg in config_names}
@@ -1262,7 +1262,7 @@ def main():
                     results["D2_search"][cfg_name].append(0.0)
                     case_result[f"{cfg_name}_score"] = 0.0
                     case_result[f"{cfg_name}_error"] = str(e)
-                    print(f" {tag}:ERR", end="", flush=True)
+                    print(f" {tag}:ERR({e.__class__.__name__}: {e})", end="", flush=True)
 
             if len(config_names) == 2:
                 o, h = case_result.get("ollama_score", 0), case_result.get("hybrid_score", 0)
@@ -1341,7 +1341,7 @@ def main():
                     results["D3_update"][cfg_name].append(0.0)
                     case_result[f"{cfg_name}_score"] = 0.0
                     case_result[f"{cfg_name}_error"] = str(e)
-                    print(f" {tag}:ERR", end="", flush=True)
+                    print(f" {tag}:ERR({e.__class__.__name__}: {e})", end="", flush=True)
 
             if len(config_names) == 2:
                 o, h = case_result.get("ollama_score", 0), case_result.get("hybrid_score", 0)
@@ -1403,7 +1403,7 @@ def main():
                     case_result[f"{cfg_name}_entity_f1"] = 0.0
                     case_result[f"{cfg_name}_rel_score"] = 0.0
                     case_result[f"{cfg_name}_error"] = str(e)
-                    print(f" {tag}:ERR", end="", flush=True)
+                    print(f" {tag}:ERR({e.__class__.__name__}: {e})", end="", flush=True)
 
             if len(config_names) == 2:
                 oe = case_result.get("ollama_entity_f1", 0)
@@ -1469,7 +1469,7 @@ def main():
                     results["D6_contradiction"][cfg_name].append(0.0)
                     case_result[f"{cfg_name}_score"] = 0.0
                     case_result[f"{cfg_name}_error"] = str(e)
-                    print(f" {tag}:ERR", end="", flush=True)
+                    print(f" {tag}:ERR({e.__class__.__name__}: {e})", end="", flush=True)
 
             if len(config_names) == 2:
                 o = case_result.get("ollama_score", 0)
@@ -1553,7 +1553,7 @@ def main():
                     results["D2_search"][cfg_name].append(0.0)
                     results["D4_graph_entity"][cfg_name].append(0.0)
                     case_result[f"{cfg_name}_error"] = str(e)
-                    print(f" {tag}:ERR", end="", flush=True)
+                    print(f" {tag}:ERR({e.__class__.__name__}: {e})", end="", flush=True)
 
             if len(config_names) == 2:
                 o = case_result.get("ollama_search", 0)
