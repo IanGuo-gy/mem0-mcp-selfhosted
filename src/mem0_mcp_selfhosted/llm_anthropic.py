@@ -19,7 +19,13 @@ import anthropic
 from mem0.configs.llms.base import BaseLlmConfig
 from mem0.llms.base import LLMBase
 
-from mem0_mcp_selfhosted.auth import is_oat_token, resolve_token
+from mem0_mcp_selfhosted.auth import (
+    is_oat_token,
+    is_token_expiring_soon,
+    read_credentials_full,
+    refresh_oat_token,
+    resolve_token,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -142,6 +148,19 @@ class AnthropicOATLLM(LLMBase):
         token = self.config.auth_token or self.config.api_key or resolve_token()
         self._build_client(token)
 
+        # In-memory OAuth state for OAT token self-refresh
+        self._refresh_token: str | None = None
+        self._expires_at: int | None = None
+        self._refresh_threshold: int = int(
+            os.environ.get("MEM0_OAT_REFRESH_THRESHOLD_SECONDS", "1800")
+        )
+
+        if token and is_oat_token(token):
+            creds = read_credentials_full()
+            if creds:
+                self._refresh_token = creds["refresh_token"]
+                self._expires_at = creds["expires_at"]
+
     def _build_client(self, token: str | None) -> None:
         """Build (or rebuild) the Anthropic client from a token.
 
@@ -170,42 +189,128 @@ class AnthropicOATLLM(LLMBase):
     _MAX_RETRIES = 2
     _BACKOFF_SECONDS = (1, 2)
 
-    def _call_api(self, params: dict) -> anthropic.types.Message:
-        """Call the Anthropic API with auth retry and transient-error retry.
+    def _try_piggyback_refresh(self) -> str | None:
+        """Step 1: Re-read credentials file for a new token (piggyback on Claude Code).
 
-        Wraps self.client.messages.create(**params) with:
-        - Retry-with-backoff for transient errors (500/502/503/529), max 2 retries
-        - Auth retry: on AuthenticationError with OAT token, re-read credentials,
-          rebuild client if token changed, retry once (with transient retry on the retry)
-        - Truncation warning logging
+        Returns the new token if different from current, or None.
         """
+        new_token = resolve_token()
+        if new_token and new_token != self._current_token:
+            # Also update refresh token and expiry from the file
+            creds = read_credentials_full()
+            if creds:
+                self._refresh_token = creds["refresh_token"]
+                self._expires_at = creds["expires_at"]
+            return new_token
+        return None
+
+    def _try_self_refresh(self) -> str | None:
+        """Step 2: Mint a new token via OAuth endpoint using stored refresh token.
+
+        Returns the new access token on success, or None.
+        """
+        if not self._refresh_token:
+            return None
+
+        result = refresh_oat_token(self._refresh_token)
+        if result:
+            self._refresh_token = result["refresh_token"]
+            expires_in = result.get("expires_in")
+            if expires_in:
+                self._expires_at = int(time.time() * 1000) + (expires_in * 1000)
+            return result["access_token"]
+        return None
+
+    def _try_wait_and_retry(self) -> str | None:
+        """Step 3: Wait 2s for Claude Code to finish refreshing, then re-read.
+
+        Returns the new token if different from current, or None.
+        """
+        time.sleep(2)
+        new_token = resolve_token()
+        if new_token and new_token != self._current_token:
+            creds = read_credentials_full()
+            if creds:
+                self._refresh_token = creds["refresh_token"]
+                self._expires_at = creds["expires_at"]
+            return new_token
+        return None
+
+    def _proactive_refresh(self) -> None:
+        """Check token expiry before API call and refresh proactively if needed.
+
+        Attempts piggyback then self-refresh (skips wait-and-retry for proactive).
+        On failure, proceeds silently — the normal 401 retry flow will handle it.
+        """
+        if not is_oat_token(self._current_token):
+            return
+        if not is_token_expiring_soon(self._expires_at, self._refresh_threshold):
+            return
+
+        logger.info("[mem0] OAT token expiring soon, proactively refreshing")
+
+        # Try piggyback first
+        new_token = self._try_piggyback_refresh()
+        if new_token:
+            self._build_client(new_token)
+            hours = (self._expires_at - int(time.time() * 1000)) / 3_600_000 if self._expires_at else 0
+            logger.info("[mem0] OAT token proactively refreshed, expires in %.1fh", hours)
+            return
+
+        # Try self-refresh
+        new_token = self._try_self_refresh()
+        if new_token:
+            self._build_client(new_token)
+            hours = (self._expires_at - int(time.time() * 1000)) / 3_600_000 if self._expires_at else 0
+            logger.info("[mem0] OAT token proactively refreshed, expires in %.1fh", hours)
+            return
+
+        # Proactive refresh failed — proceed with current token, 401 retry will handle it
+
+    def _call_api(self, params: dict) -> anthropic.types.Message:
+        """Call the Anthropic API with proactive refresh, auth retry, and transient retry.
+
+        Flow:
+        1. Proactive check: if OAT token expiring soon, refresh before calling
+        2. Make API call with transient retry (500/502/503/529)
+        3. On AuthenticationError with OAT token, 3-step defensive strategy:
+           Step 1 (piggyback): re-read credentials file
+           Step 2 (self-refresh): mint new token via OAuth endpoint
+           Step 3 (wait-and-retry): sleep 2s, re-read credentials file
+        4. On any step success, retry API call exactly once
+        """
+        # Proactive pre-expiry refresh
+        self._proactive_refresh()
+
         try:
             response = self._call_with_transient_retry(params)
-        except anthropic.AuthenticationError:
+        except anthropic.AuthenticationError as auth_err:
             if not is_oat_token(self._current_token):
                 raise
 
-            new_token = resolve_token()
-
-            if new_token is None:
-                logger.warning(
-                    "[mem0] OAT token expired but no token available from credentials"
-                    " — not retrying"
-                )
-                raise
-
-            if new_token == self._current_token:
-                logger.warning(
-                    "[mem0] OAT token expired but credentials file has same token"
-                    " — not retrying"
-                )
-                raise
-
-            logger.info(
-                "[mem0] OAT token expired, refreshed from credentials file and retrying"
-            )
-            self._build_client(new_token)
-            response = self._call_with_transient_retry(params)
+            # Step 1: Piggyback on credentials file
+            new_token = self._try_piggyback_refresh()
+            if new_token:
+                logger.info("[mem0] OAT token expired, piggybacked on credentials file refresh")
+                self._build_client(new_token)
+                response = self._call_with_transient_retry(params)
+            else:
+                # Step 2: Self-refresh via OAuth
+                new_token = self._try_self_refresh()
+                if new_token:
+                    logger.info("[mem0] OAT token expired, self-refreshed via OAuth endpoint")
+                    self._build_client(new_token)
+                    response = self._call_with_transient_retry(params)
+                else:
+                    # Step 3: Wait-and-retry
+                    new_token = self._try_wait_and_retry()
+                    if new_token:
+                        logger.info("[mem0] OAT token expired, recovered after wait-and-retry")
+                        self._build_client(new_token)
+                        response = self._call_with_transient_retry(params)
+                    else:
+                        logger.error("[mem0] OAT token expired, all refresh strategies exhausted")
+                        raise auth_err
 
         if response.stop_reason == "max_tokens":
             logger.warning(

@@ -167,13 +167,18 @@ def _make_api_response(text="ok", stop_reason="end_turn"):
 
 
 def _make_llm(token=OAT_TOKEN):
-    """Create an AnthropicOATLLM with mocked internals (no real API client)."""
-    with patch("mem0_mcp_selfhosted.llm_anthropic.resolve_token", return_value=token):
-        with patch("anthropic.Anthropic"):
-            from mem0_mcp_selfhosted.llm_anthropic import AnthropicOATConfig
+    """Create an AnthropicOATLLM with mocked internals (no real API client).
 
-            config = AnthropicOATConfig(model="claude-sonnet-4-20250514", auth_token=token)
-            llm = AnthropicOATLLM(config=config)
+    Mocks read_credentials_full to prevent reading real ~/.claude/.credentials.json,
+    so _refresh_token and _expires_at start as None.
+    """
+    with patch("mem0_mcp_selfhosted.llm_anthropic.resolve_token", return_value=token):
+        with patch("mem0_mcp_selfhosted.llm_anthropic.read_credentials_full", return_value=None):
+            with patch("anthropic.Anthropic"):
+                from mem0_mcp_selfhosted.llm_anthropic import AnthropicOATConfig
+
+                config = AnthropicOATConfig(model="claude-sonnet-4-20250514", auth_token=token)
+                llm = AnthropicOATLLM(config=config)
     return llm
 
 
@@ -181,7 +186,7 @@ class TestCallApiTokenRefresh:
     """Tests for _call_api auth retry logic."""
 
     def test_retry_succeeds_with_new_token(self):
-        """4.1: _call_api retries when resolve_token returns a different token."""
+        """Step 1 piggyback: _call_api retries when resolve_token returns a different token."""
         llm = _make_llm(OAT_TOKEN)
         success_response = _make_api_response("retried ok")
 
@@ -192,36 +197,39 @@ class TestCallApiTokenRefresh:
         with patch(
             "mem0_mcp_selfhosted.llm_anthropic.resolve_token", return_value=OAT_TOKEN_NEW
         ):
-            with patch.object(llm, "_build_client") as mock_build:
-                result = llm._call_api({"model": "test"})
+            with patch("mem0_mcp_selfhosted.llm_anthropic.read_credentials_full", return_value=None):
+                with patch.object(llm, "_build_client") as mock_build:
+                    result = llm._call_api({"model": "test"})
 
         mock_build.assert_called_once_with(OAT_TOKEN_NEW)
         assert result is success_response
 
     def test_no_retry_when_token_unchanged(self):
-        """4.2: _call_api does NOT retry when token is the same."""
+        """All 3 steps fail: same token, no refresh token, wait-and-retry same token."""
         llm = _make_llm(OAT_TOKEN)
         llm.client.messages.create = MagicMock(side_effect=_make_auth_error())
 
         with patch(
             "mem0_mcp_selfhosted.llm_anthropic.resolve_token", return_value=OAT_TOKEN
         ):
-            with pytest.raises(anthropic.AuthenticationError):
-                llm._call_api({"model": "test"})
+            with patch("mem0_mcp_selfhosted.llm_anthropic.time.sleep"):
+                with pytest.raises(anthropic.AuthenticationError):
+                    llm._call_api({"model": "test"})
 
-        # Only one call — no retry
+        # Only one call — no retry (all 3 steps failed to get a new token)
         assert llm.client.messages.create.call_count == 1
 
     def test_no_retry_when_resolve_returns_none(self):
-        """4.3: _call_api does NOT retry when resolve_token returns None."""
+        """All 3 steps fail: None token, no refresh token, wait-and-retry None."""
         llm = _make_llm(OAT_TOKEN)
         llm.client.messages.create = MagicMock(side_effect=_make_auth_error())
 
         with patch(
             "mem0_mcp_selfhosted.llm_anthropic.resolve_token", return_value=None
         ):
-            with pytest.raises(anthropic.AuthenticationError):
-                llm._call_api({"model": "test"})
+            with patch("mem0_mcp_selfhosted.llm_anthropic.time.sleep"):
+                with pytest.raises(anthropic.AuthenticationError):
+                    llm._call_api({"model": "test"})
 
         assert llm.client.messages.create.call_count == 1
 
@@ -254,7 +262,7 @@ class TestCallApiTokenRefresh:
         mock_resolve.assert_not_called()
 
     def test_no_infinite_retry_loops(self):
-        """4.6: Only one retry — if retry also fails with AuthError, it propagates."""
+        """Only one retry — if retry also fails with AuthError, it propagates."""
         llm = _make_llm(OAT_TOKEN)
         llm.client.messages.create = MagicMock(
             side_effect=[_make_auth_error(), _make_auth_error()]
@@ -263,9 +271,10 @@ class TestCallApiTokenRefresh:
         with patch(
             "mem0_mcp_selfhosted.llm_anthropic.resolve_token", return_value=OAT_TOKEN_NEW
         ):
-            with patch.object(llm, "_build_client"):
-                with pytest.raises(anthropic.AuthenticationError):
-                    llm._call_api({"model": "test"})
+            with patch("mem0_mcp_selfhosted.llm_anthropic.read_credentials_full", return_value=None):
+                with patch.object(llm, "_build_client"):
+                    with pytest.raises(anthropic.AuthenticationError):
+                        llm._call_api({"model": "test"})
 
         # Exactly 2 calls: original + one retry
         assert llm.client.messages.create.call_count == 2
@@ -463,9 +472,191 @@ class TestTransientRetry:
         with patch(
             "mem0_mcp_selfhosted.llm_anthropic.resolve_token", return_value=OAT_TOKEN_NEW
         ):
-            with patch.object(llm, "_build_client"):
-                with patch("mem0_mcp_selfhosted.llm_anthropic.time.sleep"):
-                    result = llm._call_api({"model": "test"})
+            with patch("mem0_mcp_selfhosted.llm_anthropic.read_credentials_full", return_value=None):
+                with patch.object(llm, "_build_client"):
+                    with patch("mem0_mcp_selfhosted.llm_anthropic.time.sleep"):
+                        result = llm._call_api({"model": "test"})
 
         assert result is success
         assert call_count["n"] == 3
+
+
+# --- Tests for the 3-step defensive auth retry strategy ---
+
+REFRESH_TOKEN = "sk-ant-ort01-test-refresh"
+REFRESH_TOKEN_NEW = "sk-ant-ort01-test-refresh-new"
+
+
+class TestThreeStepAuthRetry:
+    """Tests for the piggyback → self-refresh → wait-and-retry strategy."""
+
+    def test_step1_piggyback_success(self):
+        """Step 1: credentials file has new token → piggyback success."""
+        llm = _make_llm(OAT_TOKEN)
+        success = _make_api_response("ok")
+        llm.client.messages.create = MagicMock(
+            side_effect=[_make_auth_error(), success]
+        )
+
+        with patch(
+            "mem0_mcp_selfhosted.llm_anthropic.resolve_token", return_value=OAT_TOKEN_NEW
+        ):
+            with patch("mem0_mcp_selfhosted.llm_anthropic.read_credentials_full", return_value=None):
+                with patch.object(llm, "_build_client") as mock_build:
+                    result = llm._call_api({"model": "test"})
+
+        mock_build.assert_called_once_with(OAT_TOKEN_NEW)
+        assert result is success
+
+    def test_step2_self_refresh_success(self):
+        """Step 2: piggyback fails (same token), OAuth self-refresh succeeds."""
+        llm = _make_llm(OAT_TOKEN)
+        llm._refresh_token = REFRESH_TOKEN
+        success = _make_api_response("ok")
+        llm.client.messages.create = MagicMock(
+            side_effect=[_make_auth_error(), success]
+        )
+
+        oauth_result = {
+            "access_token": OAT_TOKEN_NEW,
+            "refresh_token": REFRESH_TOKEN_NEW,
+            "expires_in": 28800,
+        }
+
+        with patch(
+            "mem0_mcp_selfhosted.llm_anthropic.resolve_token", return_value=OAT_TOKEN
+        ):
+            with patch(
+                "mem0_mcp_selfhosted.llm_anthropic.refresh_oat_token", return_value=oauth_result
+            ):
+                with patch.object(llm, "_build_client") as mock_build:
+                    result = llm._call_api({"model": "test"})
+
+        mock_build.assert_called_once_with(OAT_TOKEN_NEW)
+        assert result is success
+        # In-memory state updated
+        assert llm._refresh_token == REFRESH_TOKEN_NEW
+        assert llm._expires_at is not None
+
+    def test_step3_wait_and_retry_success(self):
+        """Step 3: piggyback + self-refresh fail, wait-and-retry finds new token."""
+        llm = _make_llm(OAT_TOKEN)
+        success = _make_api_response("ok")
+        llm.client.messages.create = MagicMock(
+            side_effect=[_make_auth_error(), success]
+        )
+
+        # resolve_token returns same token first (Step 1), then new token (Step 3)
+        resolve_calls = {"n": 0}
+        def _resolve_side_effect():
+            resolve_calls["n"] += 1
+            if resolve_calls["n"] <= 1:
+                return OAT_TOKEN  # Step 1: same token
+            return OAT_TOKEN_NEW  # Step 3: new token after wait
+
+        with patch(
+            "mem0_mcp_selfhosted.llm_anthropic.resolve_token",
+            side_effect=_resolve_side_effect,
+        ):
+            with patch("mem0_mcp_selfhosted.llm_anthropic.read_credentials_full", return_value=None):
+                with patch.object(llm, "_build_client") as mock_build:
+                    with patch("mem0_mcp_selfhosted.llm_anthropic.time.sleep") as mock_sleep:
+                        result = llm._call_api({"model": "test"})
+
+        mock_sleep.assert_called_once_with(2)
+        mock_build.assert_called_once_with(OAT_TOKEN_NEW)
+        assert result is success
+
+    def test_all_steps_exhausted_raises(self):
+        """All 3 steps fail → re-raise original AuthenticationError."""
+        llm = _make_llm(OAT_TOKEN)
+        llm.client.messages.create = MagicMock(side_effect=_make_auth_error())
+
+        with patch(
+            "mem0_mcp_selfhosted.llm_anthropic.resolve_token", return_value=OAT_TOKEN
+        ):
+            with patch("mem0_mcp_selfhosted.llm_anthropic.time.sleep"):
+                with pytest.raises(anthropic.AuthenticationError):
+                    llm._call_api({"model": "test"})
+
+        assert llm.client.messages.create.call_count == 1
+
+    def test_non_oat_token_skips_all_refresh(self):
+        """API key tokens skip all refresh logic entirely."""
+        llm = _make_llm(API_KEY)
+        llm.client.messages.create = MagicMock(side_effect=_make_auth_error())
+
+        with patch(
+            "mem0_mcp_selfhosted.llm_anthropic.resolve_token"
+        ) as mock_resolve:
+            with patch(
+                "mem0_mcp_selfhosted.llm_anthropic.refresh_oat_token"
+            ) as mock_refresh:
+                with pytest.raises(anthropic.AuthenticationError):
+                    llm._call_api({"model": "test"})
+
+        mock_resolve.assert_not_called()
+        mock_refresh.assert_not_called()
+        assert llm.client.messages.create.call_count == 1
+
+
+class TestProactiveRefresh:
+    """Tests for pre-call proactive token refresh."""
+
+    def test_proactive_refresh_triggered_when_expiring_soon(self):
+        """Token expiring soon → proactive refresh attempted before API call."""
+        llm = _make_llm(OAT_TOKEN)
+        llm._expires_at = int(__import__("time").time() * 1000) + (60 * 1000)  # 1min left
+        llm._refresh_token = REFRESH_TOKEN
+        success = _make_api_response("ok")
+        llm.client.messages.create = MagicMock(return_value=success)
+
+        oauth_result = {
+            "access_token": OAT_TOKEN_NEW,
+            "refresh_token": REFRESH_TOKEN_NEW,
+            "expires_in": 28800,
+        }
+
+        with patch(
+            "mem0_mcp_selfhosted.llm_anthropic.resolve_token", return_value=OAT_TOKEN
+        ):
+            with patch(
+                "mem0_mcp_selfhosted.llm_anthropic.refresh_oat_token", return_value=oauth_result
+            ):
+                with patch.object(llm, "_build_client") as mock_build:
+                    result = llm._call_api({"model": "test"})
+
+        # Proactive refresh called _build_client before the API call
+        mock_build.assert_called_once_with(OAT_TOKEN_NEW)
+        assert result is success
+        # API call succeeded on first try (no AuthenticationError)
+        assert llm.client.messages.create.call_count == 1
+
+    def test_proactive_refresh_skipped_when_ample_time(self):
+        """Token has ample time → no proactive refresh, direct API call."""
+        llm = _make_llm(OAT_TOKEN)
+        llm._expires_at = int(__import__("time").time() * 1000) + (4 * 3600 * 1000)  # 4hrs left
+        success = _make_api_response("ok")
+        llm.client.messages.create = MagicMock(return_value=success)
+
+        with patch(
+            "mem0_mcp_selfhosted.llm_anthropic.refresh_oat_token"
+        ) as mock_refresh:
+            result = llm._call_api({"model": "test"})
+
+        mock_refresh.assert_not_called()
+        assert result is success
+
+    def test_proactive_refresh_skipped_for_api_key(self):
+        """Non-OAT token → proactive refresh check skipped entirely."""
+        llm = _make_llm(API_KEY)
+        success = _make_api_response("ok")
+        llm.client.messages.create = MagicMock(return_value=success)
+
+        with patch(
+            "mem0_mcp_selfhosted.llm_anthropic.is_token_expiring_soon"
+        ) as mock_expiry:
+            result = llm._call_api({"model": "test"})
+
+        mock_expiry.assert_not_called()
+        assert result is success

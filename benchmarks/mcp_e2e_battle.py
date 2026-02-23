@@ -873,11 +873,12 @@ def _make_memory(
 
     from mem0_mcp_selfhosted.config import build_config
     from mem0_mcp_selfhosted.server import register_providers
-    from mem0_mcp_selfhosted.helpers import patch_graph_sanitizer
+    from mem0_mcp_selfhosted.helpers import patch_graph_sanitizer, patch_gemini_parse_response
 
     config_dict, providers_info, split_config = build_config()
     register_providers(providers_info)
     patch_graph_sanitizer()
+    patch_gemini_parse_response()
 
     from mem0 import Memory
     memory = Memory.from_config(config_dict)

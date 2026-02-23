@@ -35,6 +35,9 @@ Thumbs.db
 # MCP config (contains personal IPs, API keys)
 .mcp.json
 
+# Benchmark output
+benchmarks/*results*.json
+
 # Local development tooling
 .claude/
 openspec/
