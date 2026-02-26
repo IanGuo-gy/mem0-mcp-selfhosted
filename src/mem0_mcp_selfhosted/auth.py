@@ -12,11 +12,11 @@ from __future__ import annotations
 import json
 import logging
 import time
-
-from mem0_mcp_selfhosted.env import opt_env
 from pathlib import Path
 
 import httpx
+
+from mem0_mcp_selfhosted.env import opt_env
 
 logger = logging.getLogger(__name__)
 

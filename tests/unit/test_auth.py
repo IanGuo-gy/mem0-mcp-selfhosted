@@ -105,6 +105,14 @@ class TestResolveToken:
         with patch("mem0_mcp_selfhosted.auth._CREDENTIALS_PATH", creds_file):
             assert resolve_token() == "sk-ant-api03-fallback"
 
+    def test_whitespace_only_token_falls_through(self, monkeypatch):
+        """Whitespace-only MEM0_ANTHROPIC_TOKEN falls through to ANTHROPIC_API_KEY."""
+        monkeypatch.setenv("MEM0_ANTHROPIC_TOKEN", "  \n")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-real")
+
+        with patch("mem0_mcp_selfhosted.auth._CREDENTIALS_PATH", Path("/nonexistent")):
+            assert resolve_token() == "sk-ant-api03-real"
+
 
 # --- Tests for read_credentials_full() ---
 
