@@ -24,6 +24,12 @@ def _env(key: str, default: str = "") -> str:
     return os.environ.get(key, default).strip()
 
 
+def _opt_env(key: str) -> str | None:
+    """Read an optional env var. Returns None if absent, stripped value if present."""
+    val = os.environ.get(key)
+    return val.strip() if val is not None else None
+
+
 def _bool_env(key: str, default: str = "false") -> bool:
     return _env(key, default).lower() in ("true", "1", "yes")
 
@@ -95,7 +101,7 @@ def build_config() -> tuple[dict[str, Any], list[ProviderInfo], dict[str, Any] |
     # --- Vector Store ---
     qdrant_url = _env("MEM0_QDRANT_URL", "http://localhost:6333")
     collection = _env("MEM0_COLLECTION", "mem0_mcp_selfhosted")
-    qdrant_api_key = os.environ.get("MEM0_QDRANT_API_KEY")
+    qdrant_api_key = _opt_env("MEM0_QDRANT_API_KEY")
     qdrant_on_disk = _bool_env("MEM0_QDRANT_ON_DISK")
 
     vector_config: dict[str, Any] = {
@@ -107,7 +113,7 @@ def build_config() -> tuple[dict[str, Any], list[ProviderInfo], dict[str, Any] |
         vector_config["api_key"] = qdrant_api_key
     if qdrant_on_disk:
         vector_config["on_disk"] = True
-    qdrant_timeout = os.environ.get("MEM0_QDRANT_TIMEOUT")
+    qdrant_timeout = _opt_env("MEM0_QDRANT_TIMEOUT")
     if qdrant_timeout:
         # QdrantConfig's Pydantic model does not accept "timeout" directly.
         # Create a pre-configured QdrantClient with the timeout and pass it
@@ -123,7 +129,7 @@ def build_config() -> tuple[dict[str, Any], list[ProviderInfo], dict[str, Any] |
         vector_config["client"] = QdrantClient(**client_kwargs)
 
     # --- History ---
-    history_db_path = os.environ.get("MEM0_HISTORY_DB_PATH")
+    history_db_path = _opt_env("MEM0_HISTORY_DB_PATH")
 
     # --- Build config dict ---
     config_dict: dict[str, Any] = {
@@ -152,8 +158,8 @@ def build_config() -> tuple[dict[str, Any], list[ProviderInfo], dict[str, Any] |
         neo4j_url = _env("MEM0_NEO4J_URL", "bolt://127.0.0.1:7687")
         neo4j_user = _env("MEM0_NEO4J_USER", "neo4j")
         neo4j_password = _env("MEM0_NEO4J_PASSWORD", "mem0graph")
-        neo4j_database = os.environ.get("MEM0_NEO4J_DATABASE")
-        neo4j_base_label = os.environ.get("MEM0_NEO4J_BASE_LABEL")
+        neo4j_database = _opt_env("MEM0_NEO4J_DATABASE")
+        neo4j_base_label = _opt_env("MEM0_NEO4J_BASE_LABEL")
         graph_threshold = float(_env("MEM0_GRAPH_THRESHOLD", "0.7"))
 
         graph_neo4j_config: dict[str, Any] = {
@@ -189,7 +195,7 @@ def build_config() -> tuple[dict[str, Any], list[ProviderInfo], dict[str, Any] |
             graph_llm_config["model"] = _env(
                 "MEM0_GRAPH_LLM_MODEL", "gemini-2.5-flash-lite"
             )
-            google_api_key = os.environ.get("GOOGLE_API_KEY")
+            google_api_key = _opt_env("GOOGLE_API_KEY")
             if google_api_key:
                 graph_llm_config["api_key"] = google_api_key
         elif graph_llm_provider == "gemini_split":
@@ -199,7 +205,7 @@ def build_config() -> tuple[dict[str, Any], list[ProviderInfo], dict[str, Any] |
             graph_llm_config["model"] = _env(
                 "MEM0_GRAPH_LLM_MODEL", "gemini-2.5-flash-lite"
             )
-            google_api_key = os.environ.get("GOOGLE_API_KEY")
+            google_api_key = _opt_env("GOOGLE_API_KEY")
             if google_api_key:
                 graph_llm_config["api_key"] = google_api_key
             # Override provider to "gemini" for pydantic validation
@@ -246,7 +252,7 @@ def build_config() -> tuple[dict[str, Any], list[ProviderInfo], dict[str, Any] |
     split_config: dict[str, Any] | None = None
     if enable_graph and graph_llm_provider_raw == "gemini_split":
         extraction_model = _env("MEM0_GRAPH_LLM_MODEL", "gemini-2.5-flash-lite")
-        google_api_key = os.environ.get("GOOGLE_API_KEY")
+        google_api_key = _opt_env("GOOGLE_API_KEY")
         contradiction_provider = _env(
             "MEM0_GRAPH_CONTRADICTION_LLM_PROVIDER", "anthropic"
         )

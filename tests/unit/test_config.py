@@ -670,6 +670,12 @@ class TestBuildConfig:
         config_dict, *_ = self._build_with_env(env)
         assert config_dict["llm"]["provider"] == "ollama"
 
+    def test_numeric_env_whitespace_stripped(self):
+        """Whitespace in numeric env vars (e.g. MEM0_LLM_MAX_TOKENS) is handled."""
+        env = {"MEM0_LLM_MAX_TOKENS": " 8192 \n"}
+        config_dict, *_ = self._build_with_env(env)
+        assert config_dict["llm"]["config"]["max_tokens"] == 8192
+
     # --- End-to-end cascade (14.x) ---
 
     def test_two_env_vars_configure_full_ollama_stack(self):
